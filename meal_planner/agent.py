@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from typing import AsyncGenerator
 
 from google.adk.agents import Agent
@@ -16,16 +18,21 @@ logger = logging.getLogger(__name__)
 # or unavailable (404), automatically try the next one in the list.
 # ---------------------------------------------------------------------------
 
+# Lite models first: they have the highest free-tier limits, so they fail least.
 FALLBACK_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-flash-latest",
-    "gemini-flash-lite-latest",
     "gemini-4-hydrogen",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
 ]
 
 FALLBACK_STATUS_CODES = {404, 429, 500, 502, 503, 504}
+ROUNDS = 2                 # go through the whole list this many times
+WAIT_BETWEEN_ROUNDS = 8    # seconds; 503 "busy" errors are usually brief
+QUOTA_COOLDOWN = 15 * 60   # skip a model for 15 min after a 429 / 404
+
+_cooldown_until: dict[str, float] = {}
 
 
 class FallbackGemini(Gemini):
@@ -36,23 +43,38 @@ class FallbackGemini(Gemini):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        last_error = None
-        for model_name in self.fallback_models:
-            request = llm_request.model_copy(deep=True)
-            request.model = model_name
-            started = False
-            try:
-                async for response in super().generate_content_async(request, stream):
-                    started = True
-                    yield response
-                return
-            except APIError as e:
-                # Only switch models if nothing has been sent to the user yet.
-                if started or e.code not in FALLBACK_STATUS_CODES:
-                    raise
-                logger.warning("Model %s failed (%s); trying next model.", model_name, e.code)
-                last_error = e
-        raise last_error
+        errors: list[APIError] = []
+        for round_no in range(ROUNDS):
+            if round_no:
+                logger.warning("All models failed; waiting %ss and retrying.", WAIT_BETWEEN_ROUNDS)
+                await asyncio.sleep(WAIT_BETWEEN_ROUNDS)
+
+            now = time.time()
+            models = [m for m in self.fallback_models if _cooldown_until.get(m, 0) <= now]
+            if not models:  # everything is cooling down: try them all anyway
+                models = list(self.fallback_models)
+
+            for model_name in models:
+                request = llm_request.model_copy(deep=True)
+                request.model = model_name
+                started = False
+                try:
+                    async for response in super().generate_content_async(request, stream):
+                        started = True
+                        yield response
+                    return
+                except APIError as e:
+                    # Only switch models if nothing has been sent to the user yet.
+                    if started or e.code not in FALLBACK_STATUS_CODES:
+                        raise
+                    logger.warning("Model %s failed (%s); trying next model.", model_name, e.code)
+                    if e.code in (404, 429):  # out of quota / retired: don't retry soon
+                        _cooldown_until[model_name] = time.time() + QUOTA_COOLDOWN
+                    errors.append(e)
+
+        # Show the most useful error: "busy" or "quota" rather than "not found".
+        errors.sort(key=lambda e: {503: 0, 504: 0, 500: 0, 502: 0, 429: 1}.get(e.code, 2))
+        raise errors[0]
 
 
 # ---------------------------------------------------------------------------
