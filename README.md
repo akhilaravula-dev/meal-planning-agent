@@ -2,6 +2,12 @@
 
 An AI agent built with [Google ADK](https://google.github.io/adk-docs/) and Gemini that creates personalized meal plans (7 days by default).
 
+## Demo
+
+The agent gathers your details, calculates your daily targets, then checks the whole meal plan in one tool call:
+
+![Meal planning agent in ADK Web](images/demo.png)
+
 ## Features
 - Works out daily calorie and macro targets from your body stats
 - Builds multi-day meal plans with ingredients, macros and calories
