@@ -8,6 +8,10 @@ The agent gathers your details, calculates your daily targets, then checks the w
 
 ![Meal planning agent in ADK Web](images/demo.png)
 
+The final result: a multi-day meal plan with macros per meal, daily totals and a grocery list:
+
+![Generated 3-day meal plan](images/meal-plan.png)
+
 ## Features
 - Works out daily calorie and macro targets from your body stats
 - Builds multi-day meal plans with ingredients, macros and calories
